@@ -57,31 +57,64 @@ cat /proc/crypto | grep zstd
 
 #### 3.1 修改内核 zram 驱动
 
-编辑内核源码中的 `drivers/block/zram/zcomp.c`，在 `zcomp_available_show()` 函数中添加 zstd 支持：
-
+在内核源码中，需要修改`drivers/block/zram/zcomp.c`:
 ```c
-/* drivers/block/zram/zcomp.c */
+...
+#include <linux/crypto.h>
+#include <linux/err.h>
 
-ssize_t zcomp_available_show(const char *comp, char *buf)
-{
-	ssize_t sz = 0;
+...
 
-	/* 原有 lzo 支持 */
-	if (!strcmp(comp, "lzo"))
-		sz += sprintf(buf + sz, "[lzo] ");
-	else
-		sz += sprintf(buf + sz, "lzo ");
-
-	/* ===== 添加以下代码，使 zram 识别 zstd ===== */
-	if (!strcmp(comp, "zstd"))
-		sz += sprintf(buf + sz, "[zstd] ");
-	else
-		sz += sprintf(buf + sz, "zstd ");
-	/* ========================================= */
-
-	sz += sprintf(buf + sz, "\n");
-	return sz;
+static void *zstd_crypto_create(void) {
+        return crypto_alloc_comp("zstd", 0, 0);
 }
+
+static void zstd_crypto_destroy(void *private) {
+        crypto_free_comp(private);
+}
+
+static int zstd_crypto_compress(const unsigned char *src, unsigned char *dst,
+                                size_t *dst_len, void *private) {
+        struct crypto_comp *comp = private;
+        unsigned int dlen = PAGE_SIZE*2; // 预留足够空间
+        int ret = crypto_comp_compress(comp, src, PAGE_SIZE, dst, &dlen);
+        *dst_len = dlen;
+        return ret;
+}
+
+static int zstd_crypto_decompress(const unsigned char *src, size_t src_len,
+                                  unsigned char *dst) {
+        // 强行临时分配一个引擎来解压（虽然有轻微性能损耗，但能完美绕过老 API 限制）
+        struct crypto_comp *comp = crypto_alloc_comp("zstd", 0, 0);
+        unsigned int dlen = PAGE_SIZE;
+        int ret;
+        
+        if (IS_ERR(comp)) return -EINVAL;
+        
+        ret = crypto_comp_decompress(comp, src, src_len, dst, &dlen);
+        crypto_free_comp(comp);
+        return ret;
+}
+
+static struct zcomp_backend zcomp_zstd = {
+        .compress = zstd_crypto_compress,
+        .decompress = zstd_crypto_decompress,
+        .create = zstd_crypto_create,
+        .destroy = zstd_crypto_destroy,
+        .name = "zstd",
+};
+/* ========================================================== */
+
+static struct zcomp_backend *backends[] = {
+	&zcomp_lzo,
+#ifdef CONFIG_ZRAM_LZ4_COMPRESS
+	&zcomp_lz4,
+#endif
+	&zcomp_zstd,
+	NULL
+};
+
+
 ```
 
 然后重新编译内核的 zram 模块：
