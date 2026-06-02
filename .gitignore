@@ -1,0 +1,22 @@
+# 编译产物
+*.o
+*.ko
+*.mod.c
+*.mod.o
+*.order
+*.symvers
+
+# 内核模块相关
+Module.symvers
+modules.order
+
+# 临时文件
+.*.cmd
+*.tmp_versions/
+.tmp_versions/
+
+# 编辑器
+.vscode/
+*.swp
+*.swo
+*~
